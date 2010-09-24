@@ -1,0 +1,119 @@
+#!/usr/bin/perl
+
+use 5.012;
+use warnings;
+use YAML;
+use LWP;
+my $user_agent='Opera/9.80 (X11; Linux i686; U; en) Presto/2.6.30 Version/10.60';
+my $ua=LWP::UserAgent->new(agent=>$user_agent);
+my @cur=(localtime)[3,4,5];
+my $date=&date(@cur);
+my $date8=gmtime(time+8*3600);
+
+#regex
+my $pre_re=qr/^\Q<tr><td colspan=2><tt>&lt;\E/;
+my $mid_re=qr/\Q&gt;\E/;
+my $post_re=qr{\Q</tt></td></tr>\E\r?$};
+
+my $pre_me=qr/^\Q<tr><td colspan=2><tt><font color="#CC00CC">* \E/;
+my $mid_me=qr/\Q \E/;
+my $post_me=qr{\Q</font></tt></td></tr>\E\r?$};
+
+my $pre_kick=qr/^\Q<tr><td colspan=2><tt><font color="#009900">*** \E/;
+my $mid1_kick=qr/\Q was kicked by \E/;
+my $mid2_kick=qr/\Q (\E/;
+my $post_kick=qr{\Q)</font></tt></td></tr>\E\r?$};
+
+my $pre_mode=qr/^\Q<tr><td colspan=2><tt><font color="#009900">*** \E/;
+my $mid1_mode=qr/\Q sets mode: \E/;
+my $mid2_mode=qr/\Q \E/;
+my $post_mode=qr{\Q</font></tt></td></tr>\E\r?$};
+
+
+sub date{
+    my ($mday,$mon,$year)=@_;
+    return sprintf "%04d/%02d/%02d",$year+1900,$mon+1,$mday;
+}
+
+sub get_content{
+    my $date=&date(@_);
+    my $response=$ua->get('http://logs.ubuntu-eu.org/free/'.$date.'/%23ubuntu-cn.html');
+    if ($response->is_success) {
+	return $response->decoded_content;
+    }
+    else{
+	warn "get_content error$date:".$response->status_line;
+	return undef;
+    }
+}
+
+sub html2rank{
+    my $log=shift;
+    my @content=split /\n/,shift;
+    my $date=&date(@_);
+    my $number=-1;
+    for (@content){
+	next unless /^<tr>/;
+	$number++;
+	my ($name,$text,$kicked,$kicked_by,$reason,$seted,$sets,$mode);
+	if (($name,$text)=(m{$pre_re([^&]+?)$mid_re(.+)$post_re(.*)})) {
+	    # $db->do("insert into log values ('$date','$number','$name','$text')");
+	    $log->{log}{$name}+=length $text;
+	} elsif ( ($name,$text)=(m{$pre_me([^ ]++)$mid_me(.+)$post_me})) {
+	    # $db->do("insert into me values ('$date','$number','$name','$text')");
+	    $log->{me}{$name}+=length $text;
+	} elsif (($kicked,$kicked_by,$reason)=(m{$pre_kick([^ ]++)$mid1_kick([^ ]++)$mid2_kick(.*)$post_kick})) {
+	    # $db->do("insert into kick values('$date','$number','$kicked','$kicked_by','$reason')");
+	    $log->{kicked}{$kicked}++;
+	    $log->{kicked_by}{$kicked_by}++;
+	}elsif (($sets,$mode,$seted)=(m{$pre_mode([^ ]++)$mid1_mode([^ ]++)$mid2_mode(.*)$post_mode})){
+	    # $db->do("insert into mode values('$date','$number','$sets','$mode','$seted')");
+	    if($mode eq '+q'){
+		$log->{sets}{$sets}++;
+		$log->{seted}{$seted}++;
+	    }
+	}
+    }
+}
+
+
+#main
+my %log;
+html2rank(\%log,&get_content(@cur),@cur);
+my %rank;
+for my $type (keys %log){
+    @{$rank{$type}}=sort { $log{$type}{$b} <=> $log{$type}{$a} } keys %{$log{$type}};
+}
+
+my $path='/var/www/localhost/htdocs/irc_log/daily/';
+for my $type ('index',sort keys % rank){
+    open OUT,'>',$path.$type.'.html';
+    say OUT '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
+<html>
+<head>
+<title>当天排行-'.$date8.'-每小时更新</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+</head>
+<body text="#000000" bgcolor="#ffffff"><tt>
+<h>当天排行-'.$date.'-每小时更新</h><br>'.$date8.'<br>';
+    if($type eq 'index'){
+	for my $type (sort keys %rank){
+	    say OUT '<a href="'.$type.'.html">'.$type.'</a><br>'
+	}
+    }
+    else{
+	say OUT '<table  border="1">
+<tr>
+<th>rank</th><th>nick</th><th>size</th><th>percent</th></tr>';
+	my $sum;
+	$sum += $log{$type}{$_} for(@{$rank{$type}});
+	my $i=1;
+	for(@{$rank{$type}}){
+	    say OUT "<tr><td>$i</td><td>$_</td><td>$log{$type}{$_}</td><td>".(sprintf "%.2f",$log{$type}{$_}*100/$sum)."%</td></tr>";
+	    $i++;
+	}
+	say OUT '</table>';
+    }
+    say OUT '
+</body></html>';
+}

@@ -1,0 +1,80 @@
+#!/usr/bin/perl
+
+use 5.012;
+use warnings;
+use YAML;
+use DBI;
+
+
+my $db_file='stats.sqlite';
+my $db = DBI->connect("dbi:SQLite:dbname=$db_file", "", "",);
+
+
+sub pre_day{
+    my $cur=shift;
+    $$cur[0]-=1;
+    @$cur=(localtime mktime(0,0,0,@$cur))[3,4,5];
+}
+
+
+my $sth;
+my $date8=gmtime(time+8*3600);
+my @dates;
+my %log;
+my %name;
+$name{$_}='nick' for qw/log me/;
+$name{$_}=$_ for qw/kicked kicked_by sets seted/;
+
+my $root='/var/www/localhost/htdocs/irc_log/yearly/';
+open INDEX,'>',$root.'index.html';
+for my $date(2005..2010){
+    say INDEX "<a href=\"$date/index.html\">$date</a><br>";
+    for my $type (qw/log me kicked kicked_by sets seted/){
+	$sth=$db->prepare("select $name{$type},sum from $type where date like '$date%'");
+	$sth->execute();
+	while($_=$sth->fetch()){
+	    my ($nick,$sum)=@$_;
+	    $log{$type}{$nick}+=$sum;
+	}
+    }
+
+
+    #main
+    my %rank;
+    for my $type (keys %log) {
+	@{$rank{$type}}=sort { $log{$type}{$b} <=> $log{$type}{$a} } keys %{$log{$type}};
+    }
+    my $path="$root$date/";
+    for my $type ('index',sort keys % rank) {
+	open OUT,'>',$path.$type.'.html';
+	say OUT '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
+<html>
+<head>
+<title>'.$date.'年排行-'.$date8.'-每天更新</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+</head>
+<body text="#000000" bgcolor="#ffffff"><tt>
+<h>'.$date.'年排行-'.$date.'-每天更新</h><br>'.$date8.'<br>';
+	if ($type eq 'index') {
+	    for my $type (sort keys %rank) {
+		say OUT '<a href="'.$type.'.html">'.$type.'</a><br>'
+	    }
+	} else {
+	    say OUT '<table  border="1">
+<tr>
+<th>rank</th><th>nick</th><th>size</th><th>percent</th></tr>';
+	    my $sum;
+	    $sum += $log{$type}{$_} for(@{$rank{$type}});
+	    my $i=1;
+	    for (@{$rank{$type}}) {
+		say OUT "<tr><td>$i</td><td>$_</td><td>$log{$type}{$_}</td><td>".(sprintf "%.2f",$log{$type}{$_}*100/$sum)."%</td></tr>";
+		$i++;
+	    }
+	    say OUT '</table>';
+	}
+	say OUT '
+</body></html>';
+    }
+}
+
+

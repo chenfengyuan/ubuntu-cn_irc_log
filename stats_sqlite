@@ -1,0 +1,95 @@
+#!/usr/bin/perl
+
+use 5.012;
+use warnings;
+use DBI;
+
+my $idb_file='irc_log.sqlite';
+my $odb_file='stats.sqlite';
+
+my $idb = DBI->connect("dbi:SQLite:dbname=$idb_file", "", "",);
+my $odb = DBI->connect("dbi:SQLite:dbname=$odb_file", "", "",);
+my $sth;
+
+sub create_db{
+    $odb->do("create table log (date text,nick text,sum integer)");
+    $odb->do("create table me (date text,nick text,sum integer)");
+    $odb->do("create table kicked (date text,kicked text,sum integer)");
+    $odb->do("create table kicked_by (date text,kicked_by text,sum integer)");
+    $odb->do("create table sets (date text,sets text,sum integer)");
+    $odb->do("create table seted (date text,seted text,sum integer)");
+    $odb->do("create table dates (date text)");
+
+    $odb->do("create index i_log on log(date,nick,sum)");
+    $odb->do("create index i_me on me(date,nick,sum)");
+    $odb->do("create index i_kicked on kicked(date,kicked,sum)");
+    $odb->do("create index i_kicked_by on kicked_by(date,kicked_by,sum)");
+    $odb->do("create index i_sets on sets(date,sets,sum)");
+    $odb->do("create index i_seted on seted(date,seted,sum)");
+    $odb->do("create index i_dates on dates(date)");
+
+    $odb->commit();
+}
+
+unless(-s $odb_file){
+    warn "not exist db";
+    &create_db;
+}
+
+my %idates;
+$sth=$idb->prepare("select date from dates");
+$sth->execute();
+while($_=$sth->fetch()){
+    $_=$$_[0];
+    $idates{$_}=undef;
+}
+
+my %odates;
+$sth=$odb->prepare("select date from dates");
+$sth->execute();
+while($_=$sth->fetch()){
+    $_=$$_[0];
+    $odates{$_}=undef;
+}
+my $total=@{[keys %idates]}-@{[keys %odates]};
+my $i;
+
+for my $date (sort keys %idates) {
+    unless (exists $odates{$date}) {
+	say "$date\t".++$i."/$total";
+	my %log;
+	for my $type (qw/log me/) {
+	    $sth=$idb->prepare("select nick,words from $type where date like '$date%'");
+	    $sth->execute();
+	    while ($_=$sth->fetch()) {
+		my ($nick,$words)=@$_;
+		$log{$type}{$nick}+=length $words;
+	    }
+	}
+	$sth=$idb->prepare("select kicked,kicked_by from kick where date like '$date%'");
+	$sth->execute();
+	while ($_=$sth->fetch()) {
+	    my ($kicked,$kicked_by)=@$_;
+	    $log{kicked}{$kicked} ++;
+	    $log{kicked_by}{$kicked_by} ++;
+	}
+	$sth=$idb->prepare("select sets,seted from mode where date like '$date%'");
+	$sth->execute();
+	while ($_=$sth->fetch()) {
+	    my ($sets,$seted)=@$_;
+	    $log{sets}{$sets} ++;
+	    $log{seted}{$seted}++;
+
+	}
+	$odb->do('BEGIN TRANSACTION');
+	for my $type (keys %log){
+	    for my $nick (keys %{$log{$type}}){
+	    	$nick=~s/'/''/g;
+		$odb->do("insert into $type values('$date','$nick','$log{$type}{$nick}')");
+	    }
+	}
+	$odb->do("insert into dates values('$date')");
+	$odb->do('commit');
+	$odb->commit();
+    }
+}

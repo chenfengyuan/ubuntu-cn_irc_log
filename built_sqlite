@@ -1,0 +1,153 @@
+#!/usr/bin/perl
+
+use warnings;
+use 5.012;
+use POSIX;
+use LWP::UserAgent;
+use utf8;
+use DBI;
+
+#argument
+
+
+
+my $db_file='irc_log.sqlite';
+my $db = DBI->connect("dbi:SQLite:dbname=$db_file", "", "",);
+
+my $user_agent='Opera/9.80 (X11; Linux i686; U; en) Presto/2.6.30 Version/10.60';
+my $ua=LWP::UserAgent->new(agent=>$user_agent);
+#$ua->show_progress(1);
+
+my @first=(2,5-1,105);
+my @last=(gmtime)[3,4,5];
+
+#regex
+
+my $pre_re=qr/^\Q<tr><td colspan=2><tt>&lt;\E/;
+my $mid_re=qr/\Q&gt;\E/;
+my $post_re=qr{\Q</tt></td></tr>\E\r?$};
+
+my $pre_me=qr/^\Q<tr><td colspan=2><tt><font color="#CC00CC">* \E/;
+my $mid_me=qr/\Q \E/;
+my $post_me=qr{\Q</font></tt></td></tr>\E\r?$};
+
+my $pre_kick=qr/^\Q<tr><td colspan=2><tt><font color="#009900">*** \E/;
+my $mid1_kick=qr/\Q was kicked by \E/;
+my $mid2_kick=qr/\Q (\E/;
+my $post_kick=qr{\Q)</font></tt></td></tr>\E\r?$};
+
+my $pre_mode=qr/^\Q<tr><td colspan=2><tt><font color="#009900">*** \E/;
+my $mid1_mode=qr/\Q sets mode: \E/;
+my $mid2_mode=qr/\Q \E/;
+my $post_mode=qr{\Q</font></tt></td></tr>\E\r?$};
+
+
+sub create_db{
+    $db->do("create table log (date text,num integer,nick text,words text)");
+    $db->do("create table me (date text,num integer,nick text,words text)");
+    $db->do("create table kick (date text,num integer,kicked text,kicked_by text,reason text)");
+    $db->do("create table mode (date text,num integer,sets text,mode text,seted text)");
+    $db->do("create table dates (date text)");
+    $db->do("create table deny (date text)");
+
+    $db->do("create index i_log on log(date,num,nick,words)");
+    $db->do("create index i_me on me(date,num,nick,words)");
+    $db->do("create index i_kick on kick(date,num,kicked,kicked_by,reason)");
+    $db->do("create index i_mode on mode(date,num,sets,mode,seted)");
+    $db->do("create index i_dates on dates(date)");
+    $db->do("create index i_deny on deny(date)");
+
+    $db->commit();
+}
+
+sub pre_day{
+    my $cur=shift;
+    $$cur[0]-=1;
+    @$cur=(gmtime mktime(0,0,0,@$cur))[3,4,5];
+}
+
+sub date{
+    my ($mday,$mon,$year)=@_;
+    return sprintf "%04d/%02d/%02d",$year+1900,$mon+1,$mday;
+}
+
+sub get_content{
+    my $date=&date(@_);
+    my $response=$ua->get('http://logs.ubuntu-eu.org/free/'.$date.'/%23ubuntu-cn.html');
+    if ($response->is_success) {
+	return $response->decoded_content;
+    }
+    else{
+	warn 'get_content error:'.$response->status_line;
+	return undef;
+    }
+}
+
+sub html2sqlite{
+    my @content=split /\n/,shift;
+    my $date=&date(@_);
+    my $number=-1;
+    $db->do('BEGIN TRANSACTION');
+    for (@content){
+	next unless /^<tr>/;
+	$number++;
+	my ($nick,$text,$kicked,$kicked_by,$reason,$seted,$sets,$mode);
+	if (($nick,$text)=(m{$pre_re([^&]+?)$mid_re(.+)$post_re(.*)})) {
+	    $text=~s/'/''/g;
+	    $db->do("insert into log values ('$date','$number','$nick','$text')");
+	} elsif ( ($nick,$text)=(m{$pre_me([^ ]++)$mid_me(.+)$post_me})) {
+	    $text=~s/'/''/g;
+	    $db->do("insert into me values ('$date','$number','$nick','$text')");
+	} elsif (($kicked,$kicked_by,$reason)=(m{$pre_kick([^ ]++)$mid1_kick([^ ]++)$mid2_kick(.*)$post_kick})) {
+	    $reason=~s/'/''/g;
+	    $db->do("insert into kick values('$date','$number','$kicked','$kicked_by','$reason')");
+	}elsif (($sets,$mode,$seted)=(m{$pre_mode([^ ]++)$mid1_mode([^ ]++)$mid2_mode(.*)$post_mode})){
+	    $db->do("insert into mode values('$date','$number','$sets','$mode','$seted')");
+	}
+    }
+    $db->do("insert into dates values('$date')");
+    $db->do('commit');
+    $db->commit();
+}
+#main
+unless(-s $db_file){
+    warn "not exist db";
+    &create_db;
+}
+
+my %dates;
+my $sth=$db->prepare("select date from dates");
+$sth->execute();
+while($_=$sth->fetch()){
+    $_=$$_[0];
+    $dates{$_}++;
+}
+
+$sth=$db->prepare("select date from deny");
+$sth->execute();
+while($_=$sth->fetch()){
+    $_=$$_[0];
+    $dates{$_}++;
+}
+my @cur=@last;
+&pre_day(\@cur);
+while(mktime(0,0,0,@cur)>=mktime(0,0,0,@first)){
+    # my ($mday,$mon,$year)=@cur;
+    # my $date=sprintf "%04d-%02d-%02d",$year+1900,$mon+1,$mday;
+    my $date=&date(@cur);
+    unless(defined $dates{$date}){
+	say $date;
+	my $html=&get_content(@cur);
+	if(defined $html){
+	    html2sqlite($html,@cur);
+	}
+	else{
+	    $db->do("insert into deny  values('$date')");
+	    $db->commit();
+	}
+	sleep 3;
+    }
+    &pre_day(\@cur);
+
+}
+
